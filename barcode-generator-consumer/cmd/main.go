@@ -13,6 +13,10 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
+
+	"github.com/your-org/barcode-generator-consumer/barcodegen"
+	"github.com/your-org/barcode-generator-consumer/consumer"
 )
 
 func main() {
@@ -38,6 +42,12 @@ func main() {
 	}
 	logger.Info("MySQL connecté")
 
+	// ── BarcodeGeneratorConsumer (traduit depuis PHP) ─────────
+	zapLogger, _ := zap.NewProduction()
+	defer zapLogger.Sync()
+	generator := barcodegen.NewBarcodeGenerator(zapLogger)
+	barcodeConsumer := consumer.NewBarcodeGeneratorConsumer(zapLogger, generator)
+
 	// ── RabbitMQ ─────────────────────────────────────────────
 	conn, err := amqp.Dial(rabbitmqURL)
 	if err != nil {
@@ -53,7 +63,6 @@ func main() {
 	}
 	defer ch.Close()
 
-	// Prefetch : traite 1 message à la fois
 	ch.Qos(1, 0, false)
 
 	msgs, err := ch.Consume(queue, "", false, false, false, false, nil)
@@ -82,7 +91,6 @@ func main() {
 			if messageID == "" {
 				messageID = "unknown"
 			}
-
 			log := logger.With("message_id", messageID)
 
 			// ── Idempotence ──────────────────────────────────
@@ -95,21 +103,15 @@ func main() {
 			// ── Retry / Backoff exponentiel ──────────────────
 			var processErr error
 			for attempt := 1; attempt <= retryMax; attempt++ {
-				log.Info("traitement du message",
-					"attempt", attempt,
-					"body", string(msg.Body),
-				)
+				log.Info("traitement du message", "attempt", attempt)
 
-				processErr = process(ctx, string(msg.Body))
+				// Appel du vrai consumer traduit depuis PHP
+				processErr = barcodeConsumer.Execute(string(msg.Body))
 				if processErr == nil {
 					break
 				}
 
-				log.Warn("échec traitement",
-					"attempt", attempt,
-					"error", processErr,
-				)
-
+				log.Warn("échec traitement", "attempt", attempt, "error", processErr)
 				if attempt < retryMax {
 					delay := time.Duration(float64(retryInitial)*math.Pow(2, float64(attempt-1))) * time.Millisecond
 					log.Info("retry dans...", "delay_ms", delay.Milliseconds())
@@ -118,17 +120,12 @@ func main() {
 			}
 
 			if processErr != nil {
-				// Max retries atteint → DLQ
-				log.Error("max retries atteint, envoi en DLQ",
-					"error", processErr,
-					"attempts", retryMax,
-				)
+				log.Error("max retries atteint, envoi en DLQ", "error", processErr)
 				saveToDLQ(db, messageID, string(msg.Body), processErr.Error(), retryMax)
-				msg.Nack(false, false) // requeue=false → DLQ RabbitMQ
+				msg.Nack(false, false)
 				continue
 			}
 
-			// ── Succès ───────────────────────────────────────
 			markAsProcessed(db, messageID, string(msg.Body))
 			log.Info("message traité avec succès")
 			msg.Ack(false)
@@ -136,60 +133,31 @@ func main() {
 	}
 }
 
-// process simule le traitement métier.
-// L'équipe Go remplace cette fonction par le vrai code.
-func process(ctx context.Context, body string) error {
-	// TODO : remplacer par le vrai traitement
-	// ex: générer le code-barre, uploader sur S3, persister en DB
-	_ = body
-	return nil
-}
-
-// isAlreadyProcessed vérifie si le message a déjà été traité.
 func isAlreadyProcessed(db *sql.DB, messageID string) bool {
-	if messageID == "unknown" {
-		return false
-	}
+	if messageID == "unknown" { return false }
 	var count int
-	err := db.QueryRow(
-		"SELECT COUNT(*) FROM processed_messages WHERE message_id = ?",
-		messageID,
-	).Scan(&count)
-	return err == nil && count > 0
+	db.QueryRow("SELECT COUNT(*) FROM processed_messages WHERE message_id = ?", messageID).Scan(&count)
+	return count > 0
 }
 
-// markAsProcessed persiste le message comme traité (idempotence).
 func markAsProcessed(db *sql.DB, messageID, body string) {
-	if messageID == "unknown" {
-		return
-	}
-	db.Exec(
-		"INSERT IGNORE INTO processed_messages (message_id, barcode) VALUES (?, ?)",
-		messageID, body,
-	)
+	if messageID == "unknown" { return }
+	db.Exec("INSERT IGNORE INTO processed_messages (message_id, barcode) VALUES (?, ?)", messageID, body)
 }
 
-// saveToDLQ persiste le message en échec dans la DLQ applicative.
 func saveToDLQ(db *sql.DB, messageID, payload, errMsg string, attempts int) {
-	db.Exec(
-		`INSERT INTO dead_letter_messages (message_id, payload, error, attempts)
-		 VALUES (?, ?, ?, ?)`,
-		messageID, payload, errMsg, attempts,
-	)
+	db.Exec(`INSERT INTO dead_letter_messages (message_id, payload, error, attempts) VALUES (?, ?, ?, ?)`,
+		messageID, payload, errMsg, attempts)
 }
 
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
+	if v := os.Getenv(key); v != "" { return v }
 	return fallback
 }
 
 func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
+		if i, err := strconv.Atoi(v); err == nil { return i }
 	}
 	return fallback
 }

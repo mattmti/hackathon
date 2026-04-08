@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # Stage 1 — Builder
 # ─────────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 # Build dependencies (gcc needed for CGO with image libs)
 RUN apk add --no-cache git ca-certificates tzdata
