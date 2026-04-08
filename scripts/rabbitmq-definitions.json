@@ -39,14 +39,5 @@
       "routing_key": "barcodes.dlq",
       "arguments": {}
     }
-  ],
-  "permissions": [
-    {
-      "user": "guest",
-      "vhost": "/",
-      "configure": ".*",
-      "write": ".*",
-      "read": ".*"
-    }
   ]
 }
