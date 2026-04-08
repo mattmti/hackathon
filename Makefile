@@ -1,4 +1,4 @@
-.PHONY: up down build logs ps clean help
+.PHONY: up down build logs ps clean help test test-infra test-mysql test-s3 test-dlq benchmark
 
 # ─────────────────────────────────────────────
 # Config
@@ -82,6 +82,11 @@ test-s3:
 ## Lance uniquement le test DLQ
 test-dlq:
 	bash tests/test-dlq.sh
+
+## Lance le benchmark Go (défaut: 1000 messages)
+## Usage : make benchmark N=5000
+benchmark:
+	bash benchmark/run-benchmark.sh $${N:-1000}
 
 ## Aide
 help:
