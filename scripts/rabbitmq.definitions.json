@@ -1,0 +1,52 @@
+{
+  "vhosts": [{ "name": "/" }],
+  "exchanges": [
+    {
+      "name": "barcodes.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "barcodes",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "barcodes.dlx",
+        "x-dead-letter-routing-key": "barcodes.dlq",
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "barcodes.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "barcodes.dlx",
+      "vhost": "/",
+      "destination": "barcodes.dlq",
+      "destination_type": "queue",
+      "routing_key": "barcodes.dlq",
+      "arguments": {}
+    }
+  ],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ]
+}

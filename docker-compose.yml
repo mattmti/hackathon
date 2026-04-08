@@ -1,0 +1,147 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────
+  # MESSAGE BROKER
+  # ─────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: barcode-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./scripts/rabbitmq-definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./scripts/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - barcode-net
+
+  # ─────────────────────────────────────────────
+  # DATABASE
+  # ─────────────────────────────────────────────
+  mysql:
+    image: mysql:8.4
+    container_name: barcode-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_USER: ${MYSQL_USER:-barcode}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-barcode}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-barcode}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - barcode-net
+
+  # ─────────────────────────────────────────────
+  # S3 (LocalStack)
+  # ─────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: barcode-s3
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: ${AWS_REGION:-eu-west-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./scripts/init-s3.sh:/etc/localstack/init/ready.d/init-s3.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - barcode-net
+
+  # ─────────────────────────────────────────────
+  # BARCODE GENERATOR (Go)
+  # ─────────────────────────────────────────────
+  barcode-generator:
+    build:
+      context: ./barcode-generator
+      dockerfile: Dockerfile
+    container_name: barcode-generator
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-barcodes}
+      RABBITMQ_DLQ: ${RABBITMQ_DLQ:-barcodes.dlq}
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET: ${S3_BUCKET:-barcodes}
+      DATABASE_URL: ${MYSQL_USER:-barcode}:${MYSQL_PASSWORD:-barcode}@tcp(mysql:3306)/${MYSQL_DATABASE:-barcode}?parseTime=true
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RETRY_MAX: ${RETRY_MAX:-3}
+      RETRY_INITIAL_DELAY_MS: ${RETRY_INITIAL_DELAY_MS:-500}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - barcode-net
+
+  # ─────────────────────────────────────────────
+  # BARCODE GENERATOR CONSUMER (Go)
+  # ─────────────────────────────────────────────
+  barcode-generator-consumer:
+    build:
+      context: ./barcode-generator-consumer
+      dockerfile: Dockerfile
+    container_name: barcode-generator-consumer
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-barcodes}
+      RABBITMQ_DLQ: ${RABBITMQ_DLQ:-barcodes.dlq}
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET: ${S3_BUCKET:-barcodes}
+      DATABASE_URL: ${MYSQL_USER:-barcode}:${MYSQL_PASSWORD:-barcode}@tcp(mysql:3306)/${MYSQL_DATABASE:-barcode}?parseTime=true
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RETRY_MAX: ${RETRY_MAX:-3}
+      RETRY_INITIAL_DELAY_MS: ${RETRY_INITIAL_DELAY_MS:-500}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - barcode-net
+
+volumes:
+  rabbitmq_data:
+  mysql_data:
+  localstack_data:
+
+networks:
+  barcode-net:
+    driver: bridge

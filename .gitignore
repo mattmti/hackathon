@@ -1,0 +1,5 @@
+.env
+*.sum
+vendor/
+barcode-generator/barcode-generator
+barcode-generator-consumer/barcode-consumer
