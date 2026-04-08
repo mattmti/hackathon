@@ -1,5 +1,21 @@
 {
+  "users": [
+    {
+      "name": "guest",
+      "password": "guest",
+      "tags": "administrator"
+    }
+  ],
   "vhosts": [{ "name": "/" }],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
   "exchanges": [
     {
       "name": "barcodes.dlx",
