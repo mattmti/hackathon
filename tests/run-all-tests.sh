@@ -36,7 +36,7 @@ echo -e "${BOLD}╚════════════════════�
 # Attendre que les services soient prêts
 echo ""
 echo -e "${YELLOW}▶ Attente que les services soient healthy...${NC}"
-sleep 3
+sleep 10
 
 run_test "Infrastructure globale"  "$SCRIPT_DIR/test-infra.sh"
 run_test "MySQL + Schéma"     "$SCRIPT_DIR/test-mysql.sh"

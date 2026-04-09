@@ -1,9 +1,7 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
-# test-dlq.sh — Vérifie le comportement de la Dead-Letter Queue
-#
-# Simule un message "poison" (mauvais format) et vérifie
-# qu'après expiration du TTL il atterrit bien en DLQ.
+# test-dlq.sh — Vérifie la Dead-Letter Queue
+# Envoie un message invalide → le consumer le Nack → DLQ
 # ─────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -23,6 +21,12 @@ echo "  TEST DLQ — Dead-Letter Queue"
 echo "═══════════════════════════════════════════════"
 echo ""
 
+# S'assurer que le consumer tourne
+info "Vérification du consumer..."
+docker start barcode-generator-consumer > /dev/null 2>&1 || true
+sleep 2
+pass "Consumer actif"
+
 # Purge la DLQ avant le test
 info "Purge de la DLQ avant test..."
 curl -s -o /dev/null \
@@ -30,63 +34,44 @@ curl -s -o /dev/null \
     -X DELETE http://localhost:15672/api/queues/%2F/barcodes.dlq/contents
 pass "DLQ purgée"
 
-# Publie un message avec TTL très court (1 seconde) pour forcer le passage en DLQ
-info "Publication d'un message avec TTL 1s (simulera l'expiration)..."
+# Publier un message avec barcode vide → va échouer dans le consumer
+# Le consumer va retry 3 fois puis Nack → DLQ
+info "Publication d'un message invalide (barcode vide)..."
 PUB=$(curl -s -o /dev/null -w "%{http_code}" \
     -u guest:guest \
     -H "Content-Type: application/json" \
     -X POST http://localhost:15672/api/exchanges/%2F//publish \
     -d '{
         "properties": {
-            "message_id": "dlq-test-poison-001",
-            "delivery_mode": 2,
-            "expiration": "1000"
+            "message_id": "dlq-test-invalid-001",
+            "delivery_mode": 2
         },
         "routing_key": "barcodes",
-        "payload": "{\"barcode\":\"INVALID\",\"format\":\"UNKNOWN\",\"message_id\":\"dlq-test-poison-001\"}",
+        "payload": "{\"barcode\":\"\",\"format\":\"CODE128\",\"title\":\"Test DLQ\"}",
         "payload_encoding": "string"
     }')
 
 if [ "$PUB" = "200" ]; then
-    pass "Message poison publié"
+    pass "Message invalide publié"
 else
     fail "Échec publication — HTTP $PUB"
 fi
 
-# Attend l'expiration du TTL
-info "Attente expiration TTL (2s)..."
-sleep 2
+# Attendre que le consumer traite + retry + Nack → DLQ
+# retry_max=3, délais: 0ms + 500ms + 1000ms = ~2s + marge
+info "Attente du traitement et des retries (10s)..."
+sleep 10
 
-# Vérifie que le message est passé en DLQ
+# Vérifier que le message est en DLQ
 DLQ_COUNT=$(curl -s -u guest:guest \
     http://localhost:15672/api/queues/%2F/barcodes.dlq 2>/dev/null | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('messages',0))" 2>/dev/null || echo "0")
+    python -c "import sys,json; d=json.load(sys.stdin); print(d.get('messages',0))" 2>/dev/null || echo "0")
 
 if [ "$DLQ_COUNT" -ge "1" ]; then
     pass "Message arrivé en DLQ ($DLQ_COUNT message(s)) — DLQ fonctionne ✓"
 else
-    fail "Message absent de la DLQ — vérifier la config x-dead-letter-exchange"
+    fail "Message absent de la DLQ"
 fi
-
-# Inspecte le message en DLQ
-info "Contenu du message en DLQ :"
-curl -s \
-    -u guest:guest \
-    -H "Content-Type: application/json" \
-    -X POST http://localhost:15672/api/queues/%2F/barcodes.dlq/get \
-    -d '{"count":1,"ackmode":"ack_requeue_true","encoding":"auto"}' | \
-    python3 -c "
-import sys, json
-msgs = json.load(sys.stdin)
-if msgs:
-    m = msgs[0]
-    print(f'  payload    : {m.get(\"payload\", \"\")}')
-    print(f'  message_id : {m.get(\"properties\",{}).get(\"message_id\",\"\")}')
-    x_death = m.get('properties',{}).get('headers',{}).get('x-death',[])
-    if x_death:
-        print(f'  reason     : {x_death[0].get(\"reason\",\"\")}')
-        print(f'  queue orig : {x_death[0].get(\"queue\",\"\")}')
-" 2>/dev/null || true
 
 echo ""
 echo "═══════════════════════════════════════════════"

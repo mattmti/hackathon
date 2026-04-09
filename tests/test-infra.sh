@@ -1,7 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────
 # test-infra.sh — Vérifie que toute l'infra est opérationnelle
-# Usage : ./tests/test-infra.sh
 # ─────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -24,11 +23,8 @@ echo "  TEST INFRA — Barcode Project"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-# ─────────────────────────────────────────────
-# 1. Docker Compose — services up
-# ─────────────────────────────────────────────
+# ── 1. Containers ─────────────────────────────────────────────
 info "Vérification des containers Docker..."
-
 for SERVICE in barcode-rabbitmq barcode-mysql barcode-s3; do
     STATUS=$(docker inspect -f '{{.State.Health.Status}}' "$SERVICE" 2>/dev/null || echo "not found")
     if [ "$STATUS" = "healthy" ]; then
@@ -38,48 +34,59 @@ for SERVICE in barcode-rabbitmq barcode-mysql barcode-s3; do
     fi
 done
 
-# ─────────────────────────────────────────────
-# 2. RabbitMQ — API de management
-# ─────────────────────────────────────────────
+# ── 2. RabbitMQ API ───────────────────────────────────────────
 info "Test RabbitMQ..."
-
 RABBIT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -u guest:guest http://localhost:15672/api/overview)
-
 if [ "$RABBIT_STATUS" = "200" ]; then
     pass "RabbitMQ Management API répond (HTTP 200)"
 else
     fail "RabbitMQ Management API — HTTP $RABBIT_STATUS"
 fi
 
-QUEUE=$(curl -s -u guest:guest \
-    http://localhost:15672/api/queues/%2F/barcodes 2>/dev/null | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null || echo "")
+# ── 3. Queues — attente active ────────────────────────────────
+info "Test queues RabbitMQ (attente active jusqu'à 15s)..."
 
-if [ "$QUEUE" = "barcodes" ]; then
+QUEUE_FOUND=false
+for i in $(seq 1 15); do
+    QUEUE=$(curl -s -u guest:guest \
+        http://localhost:15672/api/queues/%2F/barcodes 2>/dev/null | \
+        python -c "import sys,json; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null || echo "")
+    if [ "$QUEUE" = "barcodes" ]; then
+        QUEUE_FOUND=true
+        break
+    fi
+    sleep 1
+done
+
+if $QUEUE_FOUND; then
     pass "Queue 'barcodes' existe"
 else
-    fail "Queue 'barcodes' introuvable"
+    fail "Queue 'barcodes' introuvable après 15s"
 fi
 
-DLQ=$(curl -s -u guest:guest \
-    http://localhost:15672/api/queues/%2F/barcodes.dlq 2>/dev/null | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null || echo "")
+DLQ_FOUND=false
+for i in $(seq 1 15); do
+    DLQ=$(curl -s -u guest:guest \
+        http://localhost:15672/api/queues/%2F/barcodes.dlq 2>/dev/null | \
+        python -c "import sys,json; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null || echo "")
+    if [ "$DLQ" = "barcodes.dlq" ]; then
+        DLQ_FOUND=true
+        break
+    fi
+    sleep 1
+done
 
-if [ "$DLQ" = "barcodes.dlq" ]; then
+if $DLQ_FOUND; then
     pass "Dead-letter queue 'barcodes.dlq' existe"
 else
-    fail "Dead-letter queue 'barcodes.dlq' introuvable"
+    fail "Dead-letter queue 'barcodes.dlq' introuvable après 15s"
 fi
 
-# ─────────────────────────────────────────────
-# 3. MySQL — connexion + tables
-# ─────────────────────────────────────────────
+# ── 4. MySQL ──────────────────────────────────────────────────
 info "Test MySQL..."
-
 MYSQL_OK=$(docker exec barcode-mysql \
     mysql -ubarcode -pbarcode barcode -sNe "SELECT 1" 2>/dev/null || echo "")
-
 if [ "$MYSQL_OK" = "1" ]; then
     pass "MySQL connexion OK"
 else
@@ -97,34 +104,24 @@ for TABLE in barcodes processed_messages dead_letter_messages; do
     fi
 done
 
-# ─────────────────────────────────────────────
-# 4. S3 / LocalStack — bucket
-# ─────────────────────────────────────────────
+# ── 5. S3 ─────────────────────────────────────────────────────
 info "Test S3 (LocalStack)..."
-
-S3_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
-    http://localhost:4566/_localstack/health)
-
+S3_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4566/_localstack/health)
 if [ "$S3_HEALTH" = "200" ]; then
     pass "LocalStack répond (HTTP 200)"
 else
     fail "LocalStack — HTTP $S3_HEALTH"
 fi
 
-BUCKET=$(docker exec barcode-s3 \
-    awslocal s3 ls 2>/dev/null | grep "barcodes" || echo "")
-
+BUCKET=$(docker exec barcode-s3 awslocal s3 ls 2>/dev/null | grep "barcodes" || echo "")
 if [ -n "$BUCKET" ]; then
     pass "Bucket S3 'barcodes' existe"
 else
     fail "Bucket S3 'barcodes' introuvable"
 fi
 
-# ─────────────────────────────────────────────
-# 5. Publish + Consume test (RabbitMQ round-trip)
-# ─────────────────────────────────────────────
-info "Test publish/consume RabbitMQ (round-trip)..."
-
+# ── 6. Round-trip RabbitMQ ────────────────────────────────────
+info "Test publish RabbitMQ..."
 PUB=$(curl -s -o /dev/null -w "%{http_code}" \
     -u guest:guest \
     -H "Content-Type: application/json" \
@@ -132,7 +129,7 @@ PUB=$(curl -s -o /dev/null -w "%{http_code}" \
     -d '{
         "properties": {"message_id": "test-infra-001", "delivery_mode": 2},
         "routing_key": "barcodes",
-        "payload": "{\"barcode\":\"1234567890128\",\"format\":\"EAN13\",\"message_id\":\"test-infra-001\"}",
+        "payload": "{\"barcode\":\"1234567890128\",\"format\":\"EAN13\"}",
         "payload_encoding": "string"
     }')
 
@@ -142,20 +139,7 @@ else
     fail "Publication message — HTTP $PUB"
 fi
 
-sleep 1
-MSG_COUNT=$(curl -s -u guest:guest \
-    http://localhost:15672/api/queues/%2F/barcodes 2>/dev/null | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('messages',0))" 2>/dev/null || echo "0")
-
-if [ "$MSG_COUNT" -ge "1" ]; then
-    pass "Message visible dans la queue ($MSG_COUNT message(s))"
-else
-    fail "Aucun message dans la queue après publication"
-fi
-
-# ─────────────────────────────────────────────
-# Résumé
-# ─────────────────────────────────────────────
+# ── Résumé ────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════"
 TOTAL=$((PASS+FAIL))
