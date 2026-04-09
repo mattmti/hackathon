@@ -1,4 +1,4 @@
-.PHONY: up down build logs ps clean help test test-infra test-mysql test-s3 test-dlq benchmark
+.PHONY: up down build logs ps clean help test test-infra test-mysql test-s3 test-dlq benchmark benchmark-php benchmark-all
 
 # ─────────────────────────────────────────────
 # Config
@@ -6,7 +6,6 @@
 COMPOSE = docker compose
 ENV_FILE = .env
 
-# Crée le .env s'il n'existe pas
 $(ENV_FILE):
 	cp .env.example $(ENV_FILE)
 	@echo "✓ .env créé depuis .env.example — pense à le personnaliser"
@@ -41,7 +40,7 @@ build:
 logs:
 	$(COMPOSE) logs -f
 
-## Logs du consumer uniquement
+## Logs du consumer Go uniquement
 logs-consumer:
 	$(COMPOSE) logs -f barcode-generator-consumer
 
@@ -63,6 +62,10 @@ restart:
 shell:
 	$(COMPOSE) exec $(SERVICE) sh
 
+# ─────────────────────────────────────────────
+# Tests
+# ─────────────────────────────────────────────
+
 ## Lance tous les tests d'infra
 test:
 	bash tests/run-all-tests.sh
@@ -83,12 +86,30 @@ test-s3:
 test-dlq:
 	bash tests/test-dlq.sh
 
-## Lance le benchmark Go (défaut: 1000 messages)
+# ─────────────────────────────────────────────
+# Benchmarks
+# ─────────────────────────────────────────────
+
+## Lance le benchmark Go — paliers 100/500/1000/2000
 ## Usage : make benchmark N=5000
 benchmark:
-	bash benchmark/run-benchmark.sh $${N:-1000}
+	bash benchmark/run-benchmark.sh $${N:-}
 
-## Aide
+## Lance le benchmark PHP — paliers 100/500/1000/2000
+## Usage : make benchmark-php N=5000
+benchmark-php:
+	bash benchmark/run-benchmark-php.sh $${N:-}
+
+## Lance benchmark Go + PHP enchaînés (rapport complet)
+benchmark-all:
+	bash benchmark/run-benchmark.sh
+	bash benchmark/run-benchmark-php.sh
+
+# ─────────────────────────────────────────────
+# Aide
+# ─────────────────────────────────────────────
+
+## Affiche les commandes disponibles
 help:
 	@echo ""
 	@echo "Commandes disponibles :"

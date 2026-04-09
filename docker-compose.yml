@@ -95,6 +95,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       RETRY_MAX: ${RETRY_MAX:-3}
       RETRY_INITIAL_DELAY_MS: ${RETRY_INITIAL_DELAY_MS:-500}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-barcode}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-barcode}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-barcode}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -127,12 +132,49 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       RETRY_MAX: ${RETRY_MAX:-3}
       RETRY_INITIAL_DELAY_MS: ${RETRY_INITIAL_DELAY_MS:-500}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-barcode}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-barcode}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-barcode}
     depends_on:
       rabbitmq:
         condition: service_healthy
       mysql:
         condition: service_healthy
       localstack:
+        condition: service_healthy
+    networks:
+      - barcode-net
+
+  # ─────────────────────────────────────────────
+  # BARCODE GENERATOR CONSUMER PHP (benchmark)
+  # ─────────────────────────────────────────────
+  barcode-generator-consumer-php:
+    build:
+      context: ./barcode-generator-consumer-php
+      dockerfile: Dockerfile
+    container_name: barcode-generator-consumer-php
+    restart: "no"
+    profiles:
+      - benchmark
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-barcodes}
+      RETRY_MAX: ${RETRY_MAX:-3}
+      RETRY_INITIAL_DELAY_MS: ${RETRY_INITIAL_DELAY_MS:-500}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-barcode}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-barcode}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-barcode}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - barcode-net

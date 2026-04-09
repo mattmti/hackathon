@@ -1,83 +1,57 @@
-# Benchmark — PHP vs Go Consumer
 
-## Environnement de test
+## Benchmark PHP — 2026-04-09 16:00
+
+### Environnement
 
 | Paramètre | Valeur |
 |-----------|--------|
-| Machine | _à compléter_ |
-| CPU | _à compléter_ |
-| RAM | _à compléter_ |
-| Docker version | _à compléter_ |
-| OS | _à compléter_ |
+| OS | MINGW64_NT-10.0-26200 |
+| Docker | 29.0.1 |
+| PHP | 8.2 |
+| Librairie barcode | picqer/php-barcode-generator |
 
----
-
-## Méthodologie
-
-1. Purge de la queue `barcodes`
-2. Publication de N messages via l'API RabbitMQ Management
-3. Attente que la queue soit vide (tous les messages consommés)
-4. Mesure du temps total, débit et ressources
-
-Les résultats sont ajoutés automatiquement par le script `benchmark/run-benchmark.sh`.
----
-
-## Benchmark Go — 2026-04-08 16:30
+### Résultats
 
 | Métrique | Valeur |
 |----------|--------|
-| Messages testés | 100 |
-| Temps total | 0.22s |
-| Débit | 450.45 msg/s |
-| Latence moyenne | 2.22 ms/msg |
-| CPU avant | 0.00% |
-| CPU après | 0.06% |
-| RAM avant | 10.26MiB / 6.682GiB |
-| RAM après | 10.16MiB / 6.682GiB |
+| Messages testés | 1000 |
+| Temps total | 17s |
+| Débit moyen | 58 msg/s |
+| Latence moyenne | 17 ms/msg |
+| Débit P50 | 151 msg/s |
+| Débit P95 | 477 msg/s |
+| Débit P99 | 477 msg/s |
+| CPU pic | 39.54% |
+| RAM pic | 11.95MiB |
 
 
 ---
 
-## Benchmark Go — 2026-04-08 16:33
-
-| Métrique | Valeur |
-|----------|--------|
-| Messages testés | 2000 |
-| Temps total | 0.24s |
-| Débit | 8403.36 msg/s |
-| Latence moyenne | 0.12 ms/msg |
-| CPU avant | 0.00% |
-| CPU après | 0.00% |
-| RAM avant | 10.32MiB / 6.682GiB |
-| RAM après | 13.84MiB / 6.682GiB |
 
 
 ---
 
-## Benchmark Go — 2026-04-08 16:35
+## Benchmark Go — 2026-04-09 16:08
+
+### Environnement
+
+| Paramètre | Valeur |
+|-----------|--------|
+| OS | MINGW64_NT-10.0-26200 |
+| Docker | 29.0.1 |
+| Image consumer | hackathon-barcode-generator-consumer |
+
+### Résultats
 
 | Métrique | Valeur |
 |----------|--------|
-| Messages testés | 300 |
-| Temps total | 11s |
-| Débit | 27 msg/s |
-| Latence moyenne | 36 ms/msg |
-| CPU avant | 0.00% |
-| CPU après | 0.00% |
-| RAM avant | 0B / 0B |
-| RAM après | 4.789MiB / 6.682GiB |
-
-
----
-
-## Benchmark Go — 2026-04-09 10:13
-
-| Métrique | Valeur |
-|----------|--------|
-| Messages testés | 500 |
-| Temps total | 4s |
-| Débit | 125 msg/s |
-| Latence moyenne | 8 ms/msg |
-| CPU pic (pendant benchmark) | 0.82% |
-| RAM pic (pendant benchmark) | 6.309MiB |
+| Messages testés | 1000 |
+| Temps total | 20s |
+| Débit moyen | 50 msg/s |
+| Latence moyenne | 20 ms/msg |
+| Débit P50 | 21 msg/s |
+| Débit P95 | 338 msg/s |
+| Débit P99 | 338 msg/s |
+| CPU pic | 62.79% |
+| RAM pic | 8.625MiB |
 

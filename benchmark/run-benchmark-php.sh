@@ -1,12 +1,13 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# benchmark/run-benchmark.sh
-# Benchmark de performance — Consumer Go
+# benchmark/run-benchmark-php.sh
+# Benchmark de performance — Consumer PHP
+# Même méthodologie et mêmes métriques que run-benchmark.sh (Go)
 #
 # Usage :
-#   ./benchmark/run-benchmark.sh           → 1000 messages (défaut)
-#   ./benchmark/run-benchmark.sh 5000      → 5000 messages
-#   make benchmark N=500
+#   ./benchmark/run-benchmark-php.sh           → 1000 messages (défaut)
+#   ./benchmark/run-benchmark-php.sh 5000      → 5000 messages
+#   make benchmark-php N=500
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -15,7 +16,8 @@ N=${1:-1000}
 RABBITMQ="http://localhost:15672"
 CREDS="guest:guest"
 QUEUE="barcodes"
-CONSUMER="barcode-generator-consumer"
+CONSUMER_PHP="barcode-generator-consumer-php"
+CONSUMER_GO="barcode-generator-consumer"
 RESULTS_FILE="benchmark/results.md"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
 DATE_FILE=$(date '+%Y%m%d_%H%M')
@@ -33,7 +35,7 @@ warn()    { echo -e "${YELLOW}⚠${NC} $1"; }
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║     BENCHMARK PERFORMANCE — Consumer Go              ║${NC}"
+echo -e "${BOLD}║     BENCHMARK PERFORMANCE — Consumer PHP             ║${NC}"
 echo -e "${BOLD}║     $TIMESTAMP — $N messages                   ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
 
@@ -45,33 +47,31 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "$CREDS" "$RABBITMQ/api/overv
 [ "$STATUS" != "200" ] && echo -e "${RED}✗ RabbitMQ non accessible${NC}" && exit 1
 success "RabbitMQ accessible"
 
-docker ps --format '{{.Names}}' | grep -q "$CONSUMER" || { echo -e "${RED}✗ Consumer non démarré${NC}"; exit 1; }
-success "Consumer Go en cours d'exécution"
+# Stopper le consumer Go pour isoler le benchmark
+info "Arrêt du consumer Go (isolation benchmark)..."
+docker stop "$CONSUMER_GO" > /dev/null 2>&1 || true
+success "Consumer Go arrêté"
 
-# Stopper le generator pour ne pas polluer la queue pendant le benchmark
-info "Arrêt du barcode-generator (isolation benchmark)..."
-docker stop barcode-generator > /dev/null 2>&1 || true
-success "Generator arrêté"
+# Builder le consumer PHP
+info "Build du consumer PHP..."
+docker compose --profile benchmark build barcode-generator-consumer-php 2>/dev/null
+success "Consumer PHP buildé"
 
 OS=$(uname -s)
 DOCKER_VERSION=$(docker --version | awk '{print $3}' | tr -d ',')
-CONSUMER_IMAGE=$(docker inspect "$CONSUMER" --format '{{.Config.Image}}' 2>/dev/null || echo "N/A")
-
 echo ""
-echo -e "  OS             : $OS"
-echo -e "  Docker         : $DOCKER_VERSION"
-echo -e "  Consumer image : $CONSUMER_IMAGE"
+echo -e "  OS      : $OS"
+echo -e "  Docker  : $DOCKER_VERSION"
+echo -e "  PHP     : 8.2"
 
-# ── 2. Stopper consumer ───────────────────────────────────────
-echo ""
-info "Pause du consumer..."
-docker stop "$CONSUMER" > /dev/null 2>&1 || true
+# ── 2. Stopper consumer PHP si existant ──────────────────────
+docker stop "$CONSUMER_PHP" > /dev/null 2>&1 || true
 sleep 1
 
 # ── 3. Purge queue ───────────────────────────────────────────
-info "Purge de la queue..."
+echo ""
+info "Purge de la queue '$QUEUE'..."
 curl -s -o /dev/null -u "$CREDS" -X DELETE "$RABBITMQ/api/queues/%2F/$QUEUE/contents"
-curl -s -o /dev/null -u "$CREDS" -X DELETE "$RABBITMQ/api/queues/%2F/$QUEUE.dlq/contents" 2>/dev/null || true
 success "Queue purgée"
 
 # ── 4. Publication ────────────────────────────────────────────
@@ -82,26 +82,26 @@ for i in $(seq 1 "$N"); do
   R=$(curl -s -o /dev/null -w "%{http_code}" \
     -u "$CREDS" -H "Content-Type: application/json" \
     -X POST "$RABBITMQ/api/exchanges/%2F//publish" \
-    -d "{\"properties\":{\"message_id\":\"bench-$DATE_FILE-$i\",\"delivery_mode\":2},\"routing_key\":\"$QUEUE\",\"payload\":\"{\\\"barcode\\\":\\\"SPAREPART_$i\\\",\\\"format\\\":\\\"CODE128\\\",\\\"title\\\":\\\"Benchmark Produit $i\\\"}\",\"payload_encoding\":\"string\"}")
+    -d "{\"properties\":{\"message_id\":\"bench-php-$DATE_FILE-$i\",\"delivery_mode\":2},\"routing_key\":\"$QUEUE\",\"payload\":\"{\\\"barcode\\\":\\\"SPAREPART_$i\\\",\\\"format\\\":\\\"CODE128\\\",\\\"title\\\":\\\"Benchmark Produit $i\\\"}\",\"payload_encoding\":\"string\"}")
   [ "$R" = "200" ] && PUBLISHED=$((PUBLISHED+1))
   [ $((i % 100)) -eq 0 ] && echo -e "  ${CYAN}→${NC} $i / $N publiés..."
 done
 success "$PUBLISHED / $N messages en queue"
 
-# ── 5. Démarrer consumer + monitoring ────────────────────────
+# ── 5. Démarrer consumer PHP + monitoring ─────────────────────
 echo ""
-info "Démarrage consumer + monitoring..."
+info "Démarrage consumer PHP + monitoring..."
 TMP_STATS=$(mktemp)
 TMP_LATENCES=$(mktemp)
 
-docker start "$CONSUMER" > /dev/null 2>&1
+docker compose --profile benchmark up -d barcode-generator-consumer-php 2>/dev/null
 START_S=$(date +%s)
-sleep 2
+sleep 3
 
 # Monitoring CPU/RAM en arrière-plan
 (
   while true; do
-    SNAP=$(docker stats "$CONSUMER" --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" 2>/dev/null || echo "0.00%|0B / 0B")
+    SNAP=$(docker stats "$CONSUMER_PHP" --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" 2>/dev/null || echo "0.00%|0B / 0B")
     echo "$SNAP" >> "$TMP_STATS"
     sleep 1
   done
@@ -172,7 +172,7 @@ MS_PER_MSG=0
 # ── 8. Résumé ─────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║     RÉSULTATS — Consumer Go                          ║${NC}"
+echo -e "${BOLD}║     RÉSULTATS — Consumer PHP                         ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Messages traités  : ${GREEN}$PUBLISHED${NC}"
@@ -187,12 +187,19 @@ echo -e "  CPU pic           : ${GREEN}${CPU_PIC}${NC}"
 echo -e "  RAM pic           : ${GREEN}${RAM_PIC}${NC}"
 echo ""
 
-# ── 9. Sauvegarde markdown ────────────────────────────────────
+# ── 9. Nettoyage ──────────────────────────────────────────────
+docker stop "$CONSUMER_PHP" > /dev/null 2>&1 || true
+
+info "Redémarrage du consumer Go..."
+docker start "$CONSUMER_GO" > /dev/null 2>&1 || true
+success "Consumer Go redémarré"
+
+# ── 10. Sauvegarde markdown ───────────────────────────────────
 cat >> "$RESULTS_FILE" << MDEOF
 
 ---
 
-## Benchmark Go — $TIMESTAMP
+## Benchmark PHP — $TIMESTAMP
 
 ### Environnement
 
@@ -200,7 +207,8 @@ cat >> "$RESULTS_FILE" << MDEOF
 |-----------|--------|
 | OS | $OS |
 | Docker | $DOCKER_VERSION |
-| Image consumer | $CONSUMER_IMAGE |
+| PHP | 8.2 |
+| Librairie barcode | picqer/php-barcode-generator |
 
 ### Résultats
 
@@ -217,11 +225,6 @@ cat >> "$RESULTS_FILE" << MDEOF
 | RAM pic | ${RAM_PIC} |
 
 MDEOF
-
-# Redémarrer le generator
-info "Redémarrage du barcode-generator..."
-docker start barcode-generator > /dev/null 2>&1 || true
-success "Generator redémarré"
 
 success "Résultats sauvegardés dans $RESULTS_FILE"
 echo ""
