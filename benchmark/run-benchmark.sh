@@ -45,7 +45,7 @@ if ! docker ps --format '{{.Names}}' | grep -q "$CONSUMER"; then
 fi
 success "Consumer Go OK"
 
-# ── 2. STOPPER le consumer pendant la publication ─────────────
+# ── 2. Stopper le consumer ────────────────────────────────────
 echo ""
 info "Pause du consumer pendant le chargement..."
 docker stop "$CONSUMER" > /dev/null
@@ -57,7 +57,7 @@ info "Purge de la queue '$QUEUE'..."
 curl -s -o /dev/null -u "$CREDS" -X DELETE "$RABBITMQ/api/queues/%2F/$QUEUE/contents"
 success "Queue purgée"
 
-# ── 4. Publication (consumer arrêté = messages s'accumulent) ──
+# ── 4. Publication ────────────────────────────────────────────
 echo ""
 info "Publication de $N messages (consumer en pause)..."
 PUBLISHED=0
@@ -72,29 +72,38 @@ for i in $(seq 1 "$N"); do
   [ $((i % 100)) -eq 0 ] && echo -e "  ${CYAN}→${NC} $i / $N publiés..."
 done
 
-# Vérifier que tous les messages sont bien dans la queue
 MSG_IN_QUEUE=$(curl -s -u "$CREDS" "$RABBITMQ/api/queues/%2F/$QUEUE" | \
   python -c "import sys,json; d=json.load(sys.stdin); print(d.get('messages',0))" 2>/dev/null || echo "0")
 success "$PUBLISHED messages publiés — $MSG_IN_QUEUE dans la queue"
 
-# ── 5. Stats AVANT ───────────────────────────────────────────
-echo ""
-info "Ressources AVANT consommation..."
-STATS_BEFORE=$(docker stats "$CONSUMER" --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" 2>/dev/null || echo "N/A,N/A")
-CPU_BEFORE=$(echo "$STATS_BEFORE" | cut -d',' -f1)
-MEM_BEFORE=$(echo "$STATS_BEFORE" | cut -d',' -f2)
-echo "  CPU : $CPU_BEFORE"
-echo "  RAM : $MEM_BEFORE"
-
-# ── 6. DÉMARRER le consumer + chrono ──────────────────────────
+# ── 5. Démarrer consumer ──────────────────────────────────────
 echo ""
 info "Démarrage du consumer — chrono lancé !"
 docker start "$CONSUMER" > /dev/null
 START_S=$(date +%s)
 
-# ── 7. Attente consommation complète ─────────────────────────
+# Laisser le consumer démarrer
+sleep 2
+
+# ── 6. Mesure CPU/RAM pendant la consommation ─────────────────
 echo ""
-info "Attente de la consommation complète..."
+info "Mesure CPU/RAM pendant la consommation..."
+
+CPU_MAX="0.00%"
+MEM_PEAK="0B"
+
+# Surveiller en arrière-plan toutes les 2 secondes
+TMP_STATS=$(mktemp)
+(
+  while true; do
+    SNAP=$(docker stats "$CONSUMER" --no-stream --format "{{.CPUPerc}}|{{.MemUsage}}" 2>/dev/null || echo "0.00%|0B")
+    echo "$SNAP" >> "$TMP_STATS"
+    sleep 2
+  done
+) &
+MONITOR_PID=$!
+
+# ── 7. Attente consommation complète ─────────────────────────
 TIMEOUT=300
 ELAPSED=0
 
@@ -120,16 +129,20 @@ done
 END_S=$(date +%s)
 TOTAL_S=$((END_S - START_S))
 
-# ── 8. Stats APRÈS ───────────────────────────────────────────
-echo ""
-info "Ressources APRÈS benchmark..."
-STATS_AFTER=$(docker stats "$CONSUMER" --no-stream --format "{{.CPUPerc}},{{.MemUsage}}")
-CPU_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f1)
-MEM_AFTER=$(echo "$STATS_AFTER" | cut -d',' -f2)
-echo "  CPU : $CPU_AFTER"
-echo "  RAM : $MEM_AFTER"
+# Stopper le monitoring
+kill $MONITOR_PID 2>/dev/null || true
+sleep 1
 
-# ── 9. Calculs (bash pur, arrondi à l'entier) ─────────────────
+# Extraire CPU max et RAM max depuis les snapshots
+if [ -f "$TMP_STATS" ] && [ -s "$TMP_STATS" ]; then
+  CPU_MAX=$(cat "$TMP_STATS" | cut -d'|' -f1 | tr -d '%' | sort -n | tail -1)
+  CPU_MAX="${CPU_MAX}%"
+  MEM_PEAK=$(cat "$TMP_STATS" | cut -d'|' -f2 | cut -d'/' -f1 | tr -d ' ' | sort -h | tail -1)
+  MEM_TOTAL=$(cat "$TMP_STATS" | cut -d'|' -f2 | cut -d'/' -f2 | tr -d ' ' | head -1)
+fi
+rm -f "$TMP_STATS"
+
+# ── 8. Calculs ────────────────────────────────────────────────
 if [ "$TOTAL_S" -gt "0" ]; then
   MSG_PER_SEC=$((N / TOTAL_S))
   MS_PER_MSG=$((TOTAL_S * 1000 / N))
@@ -138,7 +151,7 @@ else
   MS_PER_MSG="< 1"
 fi
 
-# ── 10. Résumé ────────────────────────────────────────────────
+# ── 9. Résumé ─────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  RÉSULTATS — Consumer Go${NC}"
@@ -149,11 +162,11 @@ echo -e "  Temps total       : ${GREEN}${TOTAL_S}s${NC}"
 echo -e "  Débit             : ${GREEN}${MSG_PER_SEC} msg/s${NC}"
 echo -e "  Latence moyenne   : ${GREEN}${MS_PER_MSG} ms/msg${NC}"
 echo ""
-echo -e "  CPU avant / après : $CPU_BEFORE → $CPU_AFTER"
-echo -e "  RAM avant / après : $MEM_BEFORE → $MEM_AFTER"
+echo -e "  CPU pic           : ${GREEN}${CPU_MAX}${NC}"
+echo -e "  RAM pic           : ${GREEN}${MEM_PEAK}${NC}"
 echo ""
 
-# ── 11. Sauvegarde ────────────────────────────────────────────
+# ── 10. Sauvegarde ────────────────────────────────────────────
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
 cat >> "$RESULTS_FILE" << RESULT
 
@@ -167,10 +180,8 @@ cat >> "$RESULTS_FILE" << RESULT
 | Temps total | ${TOTAL_S}s |
 | Débit | ${MSG_PER_SEC} msg/s |
 | Latence moyenne | ${MS_PER_MSG} ms/msg |
-| CPU avant | $CPU_BEFORE |
-| CPU après | $CPU_AFTER |
-| RAM avant | $MEM_BEFORE |
-| RAM après | $MEM_AFTER |
+| CPU pic (pendant benchmark) | ${CPU_MAX} |
+| RAM pic (pendant benchmark) | ${MEM_PEAK} |
 
 RESULT
 

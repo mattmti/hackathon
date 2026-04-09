@@ -67,3 +67,17 @@ Les résultats sont ajoutés automatiquement par le script `benchmark/run-benchm
 | RAM avant | 0B / 0B |
 | RAM après | 4.789MiB / 6.682GiB |
 
+
+---
+
+## Benchmark Go — 2026-04-09 10:13
+
+| Métrique | Valeur |
+|----------|--------|
+| Messages testés | 500 |
+| Temps total | 4s |
+| Débit | 125 msg/s |
+| Latence moyenne | 8 ms/msg |
+| CPU pic (pendant benchmark) | 0.82% |
+| RAM pic (pendant benchmark) | 6.309MiB |
+
