@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/code128"
@@ -24,6 +25,24 @@ const (
 	DefaultBorder        = 10
 	DefaultSpace         = 8
 )
+
+// Pool de buffers réutilisables — évite des allocations à chaque message
+var bufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
+// Couleurs précalculées une seule fois
+var (
+	colorWhite = color.RGBA{255, 255, 255, 255}
+	colorBlack = image.NewUniform(color.Black)
+)
+
+// MkdirAll une seule fois au démarrage
+func init() {
+	os.MkdirAll("output", 0755)
+}
 
 type TestBarcodeOwner struct {
 	ObjectType string
@@ -49,9 +68,7 @@ func (g *BarcodeGenerator) GenerateBarcodeEntity(obj TestBarcodeOwner) (string, 
 		return "", err
 	}
 
-	os.MkdirAll("output", 0755)
 	filename := fmt.Sprintf("output/%s_%s.jpg", obj.ObjectType, obj.Value)
-
 	if err := os.WriteFile(filename, imgBytes, 0644); err != nil {
 		return "", err
 	}
@@ -61,33 +78,34 @@ func (g *BarcodeGenerator) GenerateBarcodeEntity(obj TestBarcodeOwner) (string, 
 }
 
 func (g *BarcodeGenerator) GenerateBarcodeImage(value string, title string) ([]byte, error) {
-	var code barcode.Barcode
-	var err error
-
-	code, err = code128.Encode(value)
+	// Génération du code-barre — on utilise image.Image pour éviter le problème de type
+	rawCode, err := code128.Encode(value)
 	if err != nil {
 		return nil, err
 	}
 
-	code, err = barcode.Scale(code, 400, DefaultBarcodeHeight)
+	scaledCode, err := barcode.Scale(rawCode, 400, DefaultBarcodeHeight)
 	if err != nil {
 		return nil, err
 	}
 
+	// Calcul dimensions
 	titleLines := wrapText(title, 45)
 	titleHeight := len(titleLines) * 15
 	totalHeight := DefaultBorder + titleHeight + DefaultSpace + DefaultBarcodeHeight + DefaultSpace + 20 + DefaultBorder
 
+	// Création image — fond blanc
 	img := image.NewRGBA(image.Rect(0, 0, DefaultImageWidth, totalHeight))
-	white := color.RGBA{255, 255, 255, 255}
-	draw.Draw(img, img.Bounds(), &image.Uniform{white}, image.Point{}, draw.Src)
+	draw.Draw(img, img.Bounds(), &image.Uniform{colorWhite}, image.Point{}, draw.Src)
 
+	// Titre centré
 	y := DefaultBorder
 	for _, line := range titleLines {
 		addLabel(img, centerX(line, DefaultImageWidth), y, line)
 		y += 15
 	}
 
+	// Code-barre centré
 	draw.Draw(
 		img,
 		image.Rect(
@@ -96,25 +114,32 @@ func (g *BarcodeGenerator) GenerateBarcodeImage(value string, title string) ([]b
 			(DefaultImageWidth+400)/2,
 			y+DefaultSpace+DefaultBarcodeHeight,
 		),
-		code,
+		scaledCode,
 		image.Point{},
 		draw.Over,
 	)
 
+	// Valeur texte sous le code-barre
 	addLabel(img, centerX(value, DefaultImageWidth), y+DefaultSpace+DefaultBarcodeHeight+DefaultSpace+15, value)
 
-	buf := new(bytes.Buffer)
+	// Encodage JPEG avec buffer du pool
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
 	if err := jpeg.Encode(buf, img, nil); err != nil {
 		return nil, err
 	}
 
-	return buf.Bytes(), nil
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 func addLabel(img *image.RGBA, x, y int, label string) {
 	d := &font.Drawer{
 		Dst:  img,
-		Src:  image.NewUniform(color.Black),
+		Src:  colorBlack,
 		Face: basicfont.Face7x13,
 		Dot:  fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)},
 	}

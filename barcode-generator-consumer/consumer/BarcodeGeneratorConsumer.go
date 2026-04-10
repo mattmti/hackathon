@@ -26,9 +26,11 @@ func NewBarcodeGeneratorConsumer(logger *zap.Logger, generator *barcodegen.Barco
 	}
 }
 
-func (c *BarcodeGeneratorConsumer) Execute(body string) error {
+// Execute — accepte directement []byte pour éviter la conversion string→[]byte
+// PHP : json_decode($msg->body, true) — même logique
+func (c *BarcodeGeneratorConsumer) Execute(body []byte) error {
 	var payload BarcodeMessage
-	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("parse message: %w", err)
 	}
 
@@ -47,6 +49,9 @@ func (c *BarcodeGeneratorConsumer) Execute(body string) error {
 		return fmt.Errorf("generate barcode: %w", err)
 	}
 
-	c.logger.Info("Barcode generated", zap.String("file", file), zap.String("barcode", payload.Barcode))
+	c.logger.Info("Barcode generated",
+		zap.String("file", file),
+		zap.String("barcode", payload.Barcode),
+	)
 	return nil
 }
