@@ -664,3 +664,135 @@ barcode-project/
 
 *Documentation rédigée dans le cadre du Hackathon Engineering — Avril 2026*
 *Équipe Engineering — Usage interne uniquement*
+
+---
+
+## 15. Personnalisation du Contenu du Code-Barre
+
+> 🎯 **Section la plus importante pour l'intégration** — C'est ici que vous définissez ce qui sera encodé dans chaque code-barre selon vos entités métier.
+
+Tout le contenu d'un code-barre se contrôle via **trois champs du message JSON** :
+
+```json
+{
+  "barcode": "← la valeur encodée dans les barres noires",
+  "format":  "← le standard de codage (CODE128 recommandé)",
+  "title":   "← le texte lisible affiché au-dessus"
+}
+```
+
+Le résultat visuel correspond exactement à ce que vous avez vu en test :
+
+```
+┌──────────────────────────────────────────────────┐
+│   Montant Inférieur (#6) / Lower pole (4,5 FT)   │  ← "title"
+│   ████ ██ ████ ██ ███ ████ ██ ███ ████ ██ ████   │
+│   ████ ██ ████ ██ ███ ████ ██ ███ ████ ██ ████   │  ← code-barre
+│   ████ ██ ████ ██ ███ ████ ██ ███ ████ ██ ████   │
+│                  SPAREPART_4                      │  ← "barcode" (texte)
+└──────────────────────────────────────────────────┘
+```
+
+### 15.1 Exemples Concrets par Type d'Entité
+
+#### Pièce détachée (Sparepart)
+
+```go
+body := fmt.Sprintf(
+    `{"barcode":"%s","format":"CODE128","title":"%s"}`,
+    sparepart.SKU,        // ex: "SPAREPART_4"
+    sparepart.ShortTitle, // ex: "Montant Inférieur (#6) / Lower pole (4,5 FT)"
+)
+```
+
+Résultat : le code-barre encode `SPAREPART_4` et affiche le titre de la pièce au-dessus.
+
+---
+
+#### Emplacement entrepôt (Addressing)
+
+D'après la logique PHP d'origine (`BarcodeGenerator.php`) :
+
+```go
+// Format : BAY_LANE_LOCATION_LEVEL
+value := fmt.Sprintf("%s_%s_%s_%s",
+    addressing.Bay,
+    addressing.Lane,
+    addressing.Location,
+    addressing.Level,
+)
+
+body := fmt.Sprintf(
+    `{"barcode":"%s","format":"CODE128","title":"Emplacement %s"}`,
+    value, // ex: "A_12_3_2"
+    value,
+)
+```
+
+---
+
+#### Emplacement retail (Deal Addressing)
+
+```go
+// Format variable selon les champs disponibles
+var value string
+if addressing.Level == "" {
+    value = addressing.Lane
+} else if addressing.Location == "" {
+    value = fmt.Sprintf("%s_%d", addressing.Lane, addressing.Location)
+} else {
+    value = fmt.Sprintf("%s_%d_%d", addressing.Lane, addressing.Location, addressing.Level)
+}
+
+body := fmt.Sprintf(
+    `{"barcode":"%s","format":"CODE128","title":"Zone %s"}`,
+    value, value,
+)
+```
+
+---
+
+#### Produit avec référence interne
+
+```go
+body := fmt.Sprintf(
+    `{"barcode":"%s","format":"CODE128","title":"%s — Réf. %s"}`,
+    product.InternalRef,  // ex: "PROD-2024-001"
+    product.Name,         // ex: "Vélo électrique 26\""
+    product.InternalRef,
+)
+```
+
+### 15.2 Règles de Formatage
+
+| Règle | Détail |
+|-------|--------|
+| **Valeur `barcode`** | Caractères alphanumériques, tirets, underscores. Éviter les caractères spéciaux qui peuvent perturber CODE128. |
+| **Longueur `barcode`** | Pas de limite stricte, mais au-delà de 20 caractères le code-barre devient très dense — préférer des identifiants courts. |
+| **Champ `title`** | Texte libre, affiché en haut de l'image. Automatiquement tronqué à 45 caractères par ligne avec retour à la ligne. |
+| **Champ `format`** | Toujours `CODE128` sauf besoin spécifique. CODE128 supporte tous les caractères ASCII et est universellement lisible. |
+| **`MessageId`** | Toujours un UUID unique (`uuid.New().String()`). Obligatoire pour l'idempotence. |
+
+### 15.3 Tester un Code-Barre Rapidement
+
+Sans modifier le code, vous pouvez publier un message de test directement via l'API RabbitMQ pour voir le résultat immédiatement :
+
+```bash
+curl -s -u guest:guest \
+  -H "Content-Type: application/json" \
+  -X POST http://localhost:15672/api/exchanges/%2F//publish \
+  -d '{
+    "properties": {"message_id": "test-001", "delivery_mode": 2},
+    "routing_key": "barcodes",
+    "payload": "{\"barcode\":\"VOTRE_VALEUR\",\"format\":\"CODE128\",\"title\":\"Votre Titre\"}",
+    "payload_encoding": "string"
+  }'
+```
+
+Puis récupérer l'image générée :
+
+```bash
+docker cp barcode-generator-consumer:/output/CODE128_VOTRE_VALEUR.jpg .
+```
+
+L'image s'ouvre directement sur votre machine.
